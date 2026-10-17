@@ -125,10 +125,10 @@ class LimitWatcher:
 
         m = STATUS_RE.findall(self.buf)
         
-        if len(m) == 0:
+        if len(m) != 2:
             return None
         
-        percent_left = max([int(time) for (time, _) in m])
+        percent_left = m[0][0]
         
         has_zero_usage = list(filter(lambda pair: pair[0] == 0, m))
         
@@ -218,8 +218,13 @@ class CodexWatcher:
         os.write(self.stdout_fd, msg.encode("utf-8"))
 
         self.limit_watcher.reset()
-        self.reprompt_at = reset_at
-        self.needs_reprompt = percent_remaining == 0
+        
+        if self.needs_reprompt and percent_remaining != 0:
+            self.reprompt_at = now
+        
+        if not self.needs_reprompt and percent_remaining == 0:
+            self.reprompt_at = reset_at
+            self.needs_reprompt = True
 
     def parse_terminal_input(self):
         try:
@@ -272,6 +277,7 @@ class CodexWatcher:
 
                 if self.needs_reprompt and self.reprompt_at and now > self.reprompt_at:
                     self.send_codex_input(self.continue_prompt)
+                    self.needs_reprompt = False
 
                 if self.codex_process.child_fd in readable:
                     self.parse_codex_output()
