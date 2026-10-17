@@ -27,8 +27,8 @@ LIMIT_IN_RE = re.compile(
 )
 
 STATUS_RE = re.compile(
-    r".*limit:[ ]*\[.*] [\d]*% left \(resets (.*)\)",
-    re.IGNORECASE,
+    r"limit:[ ]*\[[█░]*] ?([\d]*)% ?left ?\(resets? ?([0-9 :A-Za-z]*)\)",
+    re.IGNORECASE
 )
 
 DURATION_RE = re.compile(
@@ -42,32 +42,6 @@ ORDINAL_RE = re.compile(r"(?<=\d)(st|nd|rd|th)\b", re.IGNORECASE)
 
 def strip_ansi(s: str) -> str:
     return ANSI_RE.sub("", s)
-
-
-def parse_duration(s: str) -> dt.timedelta:
-    total = dt.timedelta()
-    found = False
-
-    for n, unit in DURATION_RE.findall(s):
-        found = True
-        n = int(n)
-        unit = unit.lower()
-
-        if unit in {"w", "week", "weeks"}:
-            total += dt.timedelta(weeks=n)
-        elif unit in {"d", "day", "days"}:
-            total += dt.timedelta(days=n)
-        elif unit in {"h", "hr", "hrs", "hour", "hours"}:
-            total += dt.timedelta(hours=n)
-        elif unit in {"m", "min", "mins", "minute", "minutes"}:
-            total += dt.timedelta(minutes=n)
-        elif unit in {"s", "sec", "secs", "second", "seconds"}:
-            total += dt.timedelta(seconds=n)
-
-    if not found:
-        raise ValueError(f"could not parse duration: {s!r}")
-
-    return total
 
 def parse_absolute_time(s: str, now: dt.datetime) -> dt.datetime:
     s = strip_ansi(s).strip()
@@ -124,28 +98,45 @@ class LimitWatcher:
     def __init__(self) -> None:
         self.buf = ""
 
-    def feed(self, chunk: str) -> tuple[dt.datetime, str] | None:
+    def feed(self, chunk: str) -> tuple[dt.datetime, str, int] | None:
         self.buf = (self.buf + strip_ansi(chunk))[-20000:]
         now = dt.datetime.now().astimezone()
 
         m = LIMIT_AT_RE.search(self.buf)
         if m:
             raw = m.group(1).strip().rstrip(" .)")
-            return parse_absolute_time(raw, now), raw
+            return parse_absolute_time(raw, now), raw, 0
 
         m = LIMIT_IN_RE.search(self.buf)
         if m:
             raw = m.group(1).strip().rstrip(" .)")
-            return now + parse_duration(raw), raw
+            return parse_absolute_time(raw, now), raw, 0
 
         m = STATUS_RE.findall(self.buf)
+        
+        if len(m) == 0:
+            return None
+        
+        percent_left = max([int(time) for (_, time) in m])
+        
+        earliest_time = min([(parse_absolute_time(raw, now), raw) for (raw, _) in m])
 
-        return None
+        return *earliest_time, percent_left
 
     def reset(self) -> None:
         self.buf = ""
+        
+class EnteredChatWatcher:
+    def __init__(self) -> None:
+        self.buf = ""
 
+    def feed(self, chunk: str) -> bool:
+        self.buf = (self.buf + strip_ansi(chunk))[-20000:]
+        return self.buf.find("Ask Codex to do anything") != -1
 
+    def reset(self) -> None:
+        self.buf = ""
+        
 def term_size() -> tuple[int, int]:
     try:
         size = os.get_terminal_size()
@@ -153,27 +144,6 @@ def term_size() -> tuple[int, int]:
     except OSError:
         print("failed to get terminal size")
         return 24, 80
-
-
-def submit_to_codex(
-    child: pexpect.spawn,
-    text: str,
-    enter_presses: int,
-    key_delay: float,
-) -> None:
-    """
-    Type text into the Codex TUI and submit it.
-
-    Important bit: use carriage return, b"\\r", for Enter. Some TUIs do not
-    treat pexpect.sendline(), which writes "\\n", the same as pressing Enter.
-    """
-    os.write(child.child_fd, text.encode("utf-8"))
-    time.sleep(key_delay)
-
-    for _ in range(max(1, enter_presses)):
-        os.write(child.child_fd, b"\r")
-        time.sleep(key_delay)
-
 
 def parse_codex_args(codex_args: list[str]) -> list[str]:
     args = list(codex_args)
@@ -183,19 +153,22 @@ def parse_codex_args(codex_args: list[str]) -> list[str]:
 
 
 class CodexWatcher:
-    def __init__(self, codex_process: pexpect.spawn, continue_prompt: str, **kwargs):
+    def __init__(self, codex_process: pexpect.spawn, continue_prompt: str):
         self.continue_prompt = continue_prompt
-        self.auto_status = kwargs["auto_status"] or True
-        self.auto_status_interval_ms = kwargs["auto_status_interval_ms"] or 1 * 60_000
+        self.auto_status = True
+        self.auto_status_interval_ms = 1 * 60_000
+        self.entered_chat_debounce_ms = 1_000
 
         self.codex_process = codex_process
         self.limit_watcher = LimitWatcher()
+        self.entered_chat_watcher = EnteredChatWatcher()
         self.stdin_fd = sys.stdin.fileno()
         self.stdout_fd = sys.stdout.fileno()
 
+        self.entered_chat_at = None
         self.needs_reprompt = False
         self.reprompt_at = None
-        self.previous_auto_status = dt.datetime.min
+        self.next_auto_status = dt.datetime.now().astimezone()
 
     def parse_codex_output(self):
         try:
@@ -210,20 +183,26 @@ class CodexWatcher:
 
         text = data.decode("utf-8", errors="replace")
         detected = self.limit_watcher.feed(text)
+        
+        if not self.entered_chat_at:
+            entered_chat = self.entered_chat_watcher.feed(text)
+            if entered_chat:
+                # its hacky, yeah. but it works!
+                self.entered_chat_at = dt.datetime.now().astimezone()
 
         if not detected:
             return
 
-        reset_at, raw = detected
+        reset_at, raw, percent_remaining = detected
         now = dt.datetime.now().astimezone()
         sleep_s = max(0.0, (reset_at - now).total_seconds())
-
-        msg = f"[codex-continue] detected limit text: {raw}. next reset is in {sleep_s/60:.2} minutes, then injecting: {self.continue_prompt!r}\n"
+        
+        msg = f"[codex-continue] {percent_remaining}% remaining. next reset is in {sleep_s/60:.2} minutes at {reset_at.isoformat()}, then injecting: {self.continue_prompt!r}\n"
         os.write(self.stdout_fd, msg.encode("utf-8"))
 
         self.limit_watcher.reset()
-        self.needs_reprompt = True
         self.reprompt_at = reset_at
+        self.needs_reprompt = percent_remaining == 0
 
     def parse_terminal_input(self):
         try:
@@ -238,8 +217,8 @@ class CodexWatcher:
     def send_codex_input(self, data: str):
         try:
             os.write(self.codex_process.child_fd, data.encode("utf-8"))
-            # we'll send CRLF
-            os.write(self.codex_process.child_fd, b"\r\n")
+            # self.codex_process.sendline(data)
+            os.write(self.codex_process.child_fd, b"\r\n\r")
         except OSError:
             return
 
@@ -270,8 +249,9 @@ class CodexWatcher:
 
                 readable, _, _ = select.select(read_fds, [], [], 0.2)
 
-                if self.auto_status and now > self.previous_auto_status:
+                if self.auto_status and self.entered_chat_at and now > self.entered_chat_at + dt.timedelta(milliseconds=self.entered_chat_debounce_ms) and now > self.next_auto_status:
                     self.send_codex_input("/status")
+                    self.next_auto_status = now + dt.timedelta(milliseconds=self.auto_status_interval_ms)
 
                 if self.needs_reprompt and self.reprompt_at and now > self.reprompt_at:
                     self.send_codex_input(self.continue_prompt)
@@ -302,7 +282,7 @@ def main() -> int:
     ap.add_argument(
         "--continue-prompt",
         "-p",
-        default="Continue",
+        default="/goal resume",
         help="Text to inject after the reset time.",
     )
     ap.add_argument(
