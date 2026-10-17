@@ -105,6 +105,11 @@ def parse_absolute_time(s: str, now: dt.datetime) -> dt.datetime:
 
     raise ValueError(f"could not parse absolute reset time: {s!r}")
 
+def myFunc((time, _)):
+  if x < 18:
+    return False
+  else:
+    return True
 
 class LimitWatcher:
     def __init__(self) -> None:
@@ -131,9 +136,15 @@ class LimitWatcher:
         
         percent_left = max([int(time) for (time, _) in m])
         
-        earliest_time = min([(parse_absolute_time(raw, now), raw) for (_, raw) in m])
+        has_zero_usage = list(filter(lambda pair: pair[0] == 0, m))
+        
+        if len(has_zero_usage) == 0:
+            return None
 
-        return *earliest_time, percent_left
+        # this assumes that 5h always resets earlier than weekly (which isn't necessarily true, but we send periodic status queries anyways)
+        latest_reset = max([(parse_absolute_time(raw, now), raw) for (_, raw) in has_zero_usage])
+
+        return *latest_reset, percent_left
 
     def reset(self) -> None:
         self.buf = ""
