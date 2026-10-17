@@ -105,12 +105,6 @@ def parse_absolute_time(s: str, now: dt.datetime) -> dt.datetime:
 
     raise ValueError(f"could not parse absolute reset time: {s!r}")
 
-def myFunc((time, _)):
-  if x < 18:
-    return False
-  else:
-    return True
-
 class LimitWatcher:
     def __init__(self) -> None:
         self.buf = ""
