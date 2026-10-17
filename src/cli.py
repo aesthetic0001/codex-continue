@@ -117,9 +117,9 @@ class LimitWatcher:
         if len(m) == 0:
             return None
         
-        percent_left = max([int(time) for (_, time) in m])
+        percent_left = max([int(time) for (time, _) in m])
         
-        earliest_time = min([(parse_absolute_time(raw, now), raw) for (raw, _) in m])
+        earliest_time = min([(parse_absolute_time(raw, now), raw) for (_, raw) in m])
 
         return *earliest_time, percent_left
 
