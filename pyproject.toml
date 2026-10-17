@@ -1,3 +1,17 @@
 [build-system]
 requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-continue"
+version = "0.1.0"
+description = "Resume a Codex CLI session when its usage limit resets"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["pexpect>=4.8"]
+
+[project.scripts]
+codex-continue = "src.cli:main"
+
+[tool.setuptools]
+packages = ["src"]
