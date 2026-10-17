@@ -7,6 +7,10 @@ def test_parse_absolute_time():
 
     cases = [
         ("2:55 PM on 22 Oct", dt.datetime(2026, 10, 22, 14, 55)),
+        ("2:55PM on22 Oct", dt.datetime(2026, 10, 22, 14, 55)),
+        ("2:55PMon22Oct", dt.datetime(2026, 10, 22, 14, 55)),
+        ("2:55PMon 22 Oct", dt.datetime(2026, 10, 22, 14, 55)),
+        ("2:55PMon22 Oct", dt.datetime(2026, 10, 22, 14, 55)),
         ("10:32 PM", dt.datetime(2026, 10, 16, 22, 32)),
         ("Oct 22, 2026 2:55 PM", dt.datetime(2026, 10, 22, 14, 55)),
     ]

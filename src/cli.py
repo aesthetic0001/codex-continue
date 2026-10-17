@@ -43,10 +43,22 @@ ORDINAL_RE = re.compile(r"(?<=\d)(st|nd|rd|th)\b", re.IGNORECASE)
 def strip_ansi(s: str) -> str:
     return ANSI_RE.sub("", s)
 
+
+def normalize_time_spacing(s: str) -> str:
+    # Terminal output can lose spaces at wrap/format boundaries, e.g.
+    # "2:55PMon22Oct". Restore the separators needed by strptime.
+    s = re.sub(r"(?i)(\d{1,2}(?::\d{2})?)(am|pm)", r"\1 \2", s)
+    s = re.sub(r"(?i)(am|pm)(on)", r"\1 \2", s)
+    s = re.sub(r"(?i)\bon(?=\d)", "on ", s)
+    s = re.sub(r"(?i)(\d)(?=(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b)", r"\1 ", s)
+    return s
+
+
 def parse_absolute_time(s: str, now: dt.datetime) -> dt.datetime:
     s = strip_ansi(s).strip()
     s = s.rstrip(" .)")
     s = ORDINAL_RE.sub("", s)
+    s = normalize_time_spacing(s)
     s = re.sub(r"\s+", " ", s)
 
     now = now.astimezone()
