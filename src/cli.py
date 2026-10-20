@@ -106,12 +106,13 @@ def parse_absolute_time(s: str, now: dt.datetime) -> dt.datetime:
     raise ValueError(f"could not parse absolute reset time: {s!r}")
 
 class LimitWatcher:
-    def __init__(self) -> None:
+    def __init__(self, reprompt_debounce_ms) -> None:
         self.buf = ""
+        self.reprompt_debounce_ms = reprompt_debounce_ms
 
     def feed(self, chunk: str) -> tuple[dt.datetime, str, int] | None:
         self.buf = (self.buf + strip_ansi(chunk))[-20000:]
-        now = dt.datetime.now().astimezone()
+        now = dt.datetime.now().astimezone() + dt.timedelta(milliseconds=self.reprompt_debounce_ms)
 
         m = LIMIT_AT_RE.search(self.buf)
         if m:
@@ -175,9 +176,10 @@ class CodexWatcher:
         self.auto_status = True
         self.auto_status_interval_ms = 1 * 60_000
         self.entered_chat_debounce_ms = 1_000
+        self.reprompt_debounce_ms = 60_000
 
         self.codex_process = codex_process
-        self.limit_watcher = LimitWatcher()
+        self.limit_watcher = LimitWatcher(self.reprompt_debounce_ms)
         self.entered_chat_watcher = EnteredChatWatcher()
         self.stdin_fd = sys.stdin.fileno()
         self.stdout_fd = sys.stdout.fileno()
